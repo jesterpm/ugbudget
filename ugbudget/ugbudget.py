@@ -14,19 +14,23 @@ def main():
                            help='Update tags-file with any unmapped accounts')
     cmd_group.add_argument('--report', action='store_true',
                            help='Produce a budget vs. actuals report')
-    parser.add_argument('tags_file', metavar='tags-file',
+    parser.add_argument('-t', '--tags', metavar='tags-file', required=True,
                         help='The mapping of GnuCash accounts to budget tags')
     parser.add_argument('data_file', metavar='gnucash-file',
                         help='The GnuCash data file to process')
+    parser.add_argument('-b', '--budget', metavar='budget-file',
+                        help='A budget to report against.')
 
     args = parser.parse_args()
 
     book = gnucashxml.from_filename(args.data_file)
 
     if args.create_tags:
-        create_tags(book, args.tags_file)
+        create_tags(book, args.tags)
     elif args.report:
-        report(book, args.tags_file)
+        report_actuals(book, args.tags)
+        if args.budget:
+            report_budget(args.budget, args.tags)
 
 def read_tags(filename):
     '''
@@ -34,7 +38,7 @@ def read_tags(filename):
     one or more tab-separated values which are treated as budget categories,
     subcategories, etc.
     '''
-    tag_header = ('category',)
+    tag_header = ('account_type',)
     tags = {}
     if os.path.isfile(filename):
         with open(filename, 'rb') as f:
@@ -44,6 +48,7 @@ def read_tags(filename):
                     tag_header = row[1:]
                 else:
                     tags[row[0]] = tuple(row[1:])
+    # TODO Sanity check: all tags and header must have same length.
     return (tag_header, tags)
 
 def write_tags(filename, tag_header, tags):
@@ -59,6 +64,9 @@ def write_tags(filename, tag_header, tags):
 def create_tags(book, tags_file):
     '''
     Read a GnuCash data file and add any new, unmapped accounts to tags_file.
+
+    Note: the header 'account_type' is special: it always defaults to the
+    account type, one of either INCOME or EXPENSE.
     '''
     (tag_header, tags) = read_tags(tags_file)
     for (acc, children, splits) in book.walk():
@@ -66,25 +74,52 @@ def create_tags(book, tags_file):
             if acc.actype == "INCOME" or acc.actype == "EXPENSE":
                 acc_name = gnucash_account_fullname(acc)
                 if acc_name not in tags:
-                    tags[acc_name] = tag_header
+                    tags[acc_name] = default_tag(tag_header, acc)
     write_tags(tags_file, tag_header, tags)
 
-def report(book, tags_file):
+def report_header(tag_header):
+    return ['month'] + list(tag_header) + ['source', 'value']
+
+def report_row(month, tag, source, value):
+    return [month] + list(tag) + [source, value]
+
+def report_actuals(book, tags_file):
     (tag_header, tags) = read_tags(tags_file)
     report = collections.defaultdict(lambda: collections.defaultdict(Decimal))
     for (acc, children, splits) in book.walk():
         acc_name = gnucash_account_fullname(acc)
         if acc_name in tags:
-            mapping = tuple([acc.actype] + list(tags[acc_name]))
             for split in splits:
                 date = split.transaction.date.strftime("%Y-%m-01")
-                report[date][mapping] += split.value.copy_negate()
+                report[date][tags[acc_name]] += split.value.copy_negate()
 
     writer = csv.writer(sys.stdout, csv.excel_tab)
-    writer.writerow(['month', 'account_type'] + list(tag_header) + ['value'])
+    writer.writerow(report_header(tag_header))
     for month in sorted(report):
-        for (mapping, value) in report[month].iteritems():
-            writer.writerow([month] + list(mapping) + [value])
+        for (tag, value) in report[month].iteritems():
+            writer.writerow(report_row(month, tag, 'actual', value))
+
+def report_budget(budget_filename, tags_file):
+    (tag_header, tags) = read_tags(tags_file)
+    tag_set = set(tags.values())
+    with open(budget_filename, 'rb') as f:
+        reader = csv.reader(f, csv.excel_tab)
+        writer = csv.writer(sys.stdout, csv.excel_tab)
+        for row in reader:
+            if row[0] == "month":
+                continue
+            else:
+                month = row[0]
+                tag = tuple(row[1:-1])
+                value = row[-1]
+                if tag in tag_set:
+                    writer.writerow(report_row(month, tag, 'budget', value))
+
+def default_tag(tag_header, acc):
+    default = list(tag_header)
+    if 'account_type' in default:
+        default[default.index('account_type')] = acc.actype
+    return tuple(default)
 
 def gnucash_account_fullname(acc, partial=''):
     if acc.parent:
@@ -96,4 +131,5 @@ def gnucash_account_fullname(acc, partial=''):
     else:
         return partial
 
-main()
+if __name__ == "__main__":
+    main()
