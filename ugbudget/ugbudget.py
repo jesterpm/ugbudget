@@ -39,7 +39,7 @@ def read_tags(filename):
     subcategories, etc.
     '''
     tag_header = ('account_type',)
-    tags = {}
+    tags = collections.OrderedDict()
     if os.path.isfile(filename):
         with open(filename, 'rb') as f:
             reader = csv.reader(f, csv.excel_tab)
@@ -58,7 +58,7 @@ def write_tags(filename, tag_header, tags):
     with open(filename, 'wb') as f:
         writer = csv.writer(f, csv.excel_tab)
         writer.writerow(['account'] + list(tag_header))
-        for account in sorted(tags):
+        for account in tags:
             writer.writerow([account] + list(tags[account]))
 
 def create_tags(book, tags_file):
